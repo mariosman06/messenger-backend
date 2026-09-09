@@ -18,6 +18,7 @@ dependencies = [
     "tenacity>=9.1.4",
     "testcontainers[postgres]>=4.15.0",
     "uvicorn>=0.52.4",
+    "websockets>=17.1",
 ]
 
 
