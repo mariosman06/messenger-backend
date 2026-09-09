@@ -1,7 +1,7 @@
 # Messenger Backend
 
-![Tests](https://img.shields.io/github/actions/workflow/status/mariosman06/messenger-backend/test.yml?branch=main&style=flat-square&logo=github&label=tests)
-![Code Check](https://img.shields.io/github/actions/workflow/status/mariosman06/messenger-backend/code_check.yml?branch=main&style=flat-square&logo=github&label=code%20check)
+![Tests](https://github.com/mariosman06/messenger-backend/actions/workflows/test.yml/badge.svg)
+![Code Check](https://github.com/mariosman06/messenger-backend/actions/workflows/code_check.yml/badge.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
