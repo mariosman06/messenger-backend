@@ -1,0 +1,35 @@
+# Database & Persistent Data
+data/
+*.db
+*.sqlite3
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Python & Build Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual Environments & Package Managers
+.venv/
+venv/
+ENV/
+
+# Testing & Quality Assurance
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs & System Files
+.vscode/
+.idea/
+.DS_Store

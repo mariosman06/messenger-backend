@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: messenger_postgres
+    environment:
+      POSTGRES_USER: messenger_user
+      POSTGRES_PASSWORD: messenger_password_123
+      POSTGRES_DB: messenger_database
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+
+  app:
+    build: .
+    container_name: messenger_app
+    ports:
+      - "8008:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app/src
+      - APP_CONFIG_PATH=/data/messenger.yaml
+    volumes:
+      - ./tests:/app/tests
+      - ./src:/app/src
+      - ./config:/data:ro
+    command: ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--no-access-log"]
+
+networks:
+  default:
+    name: messenger_net
+    driver: bridge
