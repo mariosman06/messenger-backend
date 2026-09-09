@@ -1,24 +1,25 @@
 # Messenger Backend
 
-A modular, high-performance real-time messaging backend API built with Python, FastAPI, raw SQL via `asyncpg`, and Redis Pub/Sub. Designed around Domain-Driven Design (DDD) principles to power real-time direct messaging, group chats, social graph management, and WebSocket push notifications.
+A modular, high-performance real-time messaging backend API built with Python, FastAPI, raw SQL via `asyncpg`, and Redis. Designed around Domain-Driven Design (DDD) principles to power real-time direct messaging, group chats, social graph management, WebSocket push notifications, and ultra-fast caching.
 
 ---
 
 ## Features
 
-* **Real-time Push Notifications:** WebSockets integrated with Redis Pub/Sub for horizontally scalable event broadcasting.
-* **Direct & Group Messaging:** Complete conversation lifecycle management, historical pagination, and authorization checks.
-* **Social Graph Management:** Granular friendship request handling and group access control.
-* **High-Performance Async I/O:** Built with raw SQL queries via `asyncpg` for maximum throughput and low latency without ORM overhead.
-* **Robust Error Handling & Reliability:** Native connection pooling for both PostgreSQL and Redis with automated health checks (`PING`).
+* **Real-time Push Notifications:** WebSockets integrated with Redis Pub/Sub for horizontally scalable event broadcasting across server instances.
+* **High-Performance Caching:** Redis key-value caching for low-latency session validation, route optimization, and state storage.
+* **Direct & Group Messaging:** Complete conversation lifecycle management, historical pagination, and membership authorization.
+* **Social Graph Management:** Granular friendship request processing and group access control.
+* **Raw SQL Performance:** Asynchronous database interaction using `asyncpg` for maximum query execution speed without ORM overhead.
+* **Reliable Infrastructure:** Built-in connection pooling for PostgreSQL and Redis with automated initialization `PING` health checks.
 
 ---
 
 ## Tech Stack
 
 * **Framework:** [FastAPI](https://fastapi.tiangolo.com/) (Async ASGI)
-* **Real-time Messaging:** WebSockets + [Redis Pub/Sub](https://redis.io/)
-* **Database & Driver:** PostgreSQL 16 with [asyncpg](https://github.com/MagicStack/asyncpg) (Raw SQL execution with custom connection pooling)
+* **Cache & Real-time Messaging:** [Redis](https://redis.io/) (In-memory Caching & Pub/Sub Event Bus)
+* **Database & Driver:** PostgreSQL 16 with [asyncpg](https://github.com/MagicStack/asyncpg) (Raw SQL with custom connection pooling)
 * **Validation & Settings:** [Pydantic v2](https://docs.pydantic.dev/) & Pydantic Settings
 * **Package Management:** [uv](https://github.com/astral-sh/uv) (Ultra-fast Python package installer)
 * **Testing & Mocks:** Pytest, Asyncio Pytest, HTTPX AsyncClient
@@ -30,7 +31,7 @@ A modular, high-performance real-time messaging backend API built with Python, F
 ## Architecture Flow
 
 ```text
-[ Client ] <--- WebSocket ---> [ FastAPI Server ] <--- Pub/Sub ---> [ Redis Cluster ]
+[ Client ] <--- WebSocket ---> [ FastAPI Server ] <--- Caching & Pub/Sub ---> [ Redis ]
                                       |
                                   asyncpg
                                       |
@@ -38,9 +39,9 @@ A modular, high-performance real-time messaging backend API built with Python, F
                                 [ PostgreSQL ]
 ```
 
-1. **HTTP Endpoints:** Handle state changes (e.g., sending messages, leaving groups, accepting friend requests).
+1. **HTTP Endpoints:** Process incoming requests for state changes (e.g., messaging, group modifications, friend requests).
 2. **Database:** Operations execute inside ACID-compliant PostgreSQL transactions using explicit SQL queries.
-3. **Redis Pub/Sub:** Dispatches internal event payloads across instances to target active WebSocket subscribers instantly.
+3. **Redis Caching & Pub/Sub:** Serves as a high-speed cache for fast data lookups while broadcasting real-time message events across instances to target active WebSockets instantly.
 
 ---
 
@@ -99,7 +100,7 @@ The API will be available at `http://localhost:8000` (Interactive docs at `/docs
 ├── src/
 │   ├── api/            # FastAPI routes, dependencies, and WS endpoints
 │   ├── database/       # Connection pooling, raw SQL queries, and models
-│   ├── redis/          # Connection management, event schemas, and Pub/Sub
+│   ├── redis/          # Connection management, caching queries, event schemas, and Pub/Sub
 │   └── services/       # Domain logic (auth, friendships, groups, messages, WS)
 ├── tests/              # Integration and unit test suites
 ├── docker-compose.yml
