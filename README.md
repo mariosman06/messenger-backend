@@ -1,5 +1,12 @@
 # Messenger Backend
 
+![Tests](https://img.shields.io/github/actions/workflow/status/mariosman06/messenger-backend/test.yml?branch=main&style=flat-square&logo=github&label=tests)
+![Code Check](https://img.shields.io/github/actions/workflow/status/mariosman06/messenger-backend/code_check.yml?branch=main&style=flat-square&logo=github&label=code%20check)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)
+
 A modular, high-performance real-time messaging backend API built with Python, FastAPI, raw SQL via `asyncpg`, and Redis. Designed around Domain-Driven Design (DDD) principles to power real-time direct messaging, group chats, social graph management, WebSocket push notifications, and ultra-fast caching.
 
 ---
