@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.crypto.tokens import hash_token
@@ -92,3 +92,10 @@ async def get_current_user_allow_deactivated(
 ) -> User:
     """Resolves authenticated context allowing deactivated users through for reactivation."""
     return await _resolve_current_user(raw_token, allow_deactivated=True)
+
+
+async def get_ws_current_user(
+    token: Annotated[str | None, Query(...)] = None,
+) -> User:
+    """Resolves authenticated user from URL query parameter (?token=...) for WebSockets."""
+    return await _resolve_current_user(token, allow_deactivated=False)

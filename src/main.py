@@ -1,5 +1,6 @@
 """FastAPI app setup, DB pool lifecycle, logging setup, and global error handlers."""
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -14,12 +15,16 @@ from src.api.routers.friendships import router as friendships_router
 from src.api.routers.groups import router as groups_router
 from src.api.routers.messages import router as messages_router
 from src.api.routers.users import router as users_router
+from src.api.routers.websocket import router as websockets_router
 from src.config.logging import request_id_var, setup_logging
 from src.config.settings import get_settings
 from src.database.connection import close_pool, get_conn, init_pool
 from src.database.errors import DatabaseError
 from src.database.queries import ensure_indexes_exist, ensure_tables_exist
+from src.redis.connection import close_redis, init_redis
+from src.redis.errors import RedisError
 from src.services.errors import ServiceError
+from src.services.websocket import start_pubsub_listener
 from src.utils.generators import uuid_v4
 
 setup_logging()
@@ -38,7 +43,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await ensure_indexes_exist(conn=conn)
         logger.info("Database schema is up to date.")
 
+    await init_redis(url=settings.redis.url)
+    pubsub_task = await start_pubsub_listener()
+
     yield
+
+    logger.info("Cancelling Pub/Sub background listener...")
+    pubsub_task.cancel()
+    try:
+        await pubsub_task
+    except asyncio.CancelledError:
+        pass
+
+    logger.info("Closing Redis connections...")
+    await close_redis()
 
     logger.info("Closing database connection pool...")
     await close_pool()
@@ -104,6 +122,15 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
+@app.exception_handler(RedisError)
+async def redis_error_handler(request: Request, exc: RedisError) -> JSONResponse:
+    logger.error("Redis execution error: %s", exc, exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "A caching or messaging operation failed."},
+    )
+
+
 # Routers
 
 app.include_router(auth_router)
@@ -111,3 +138,4 @@ app.include_router(users_router)
 app.include_router(friendships_router)
 app.include_router(groups_router)
 app.include_router(messages_router)
+app.include_router(websockets_router)

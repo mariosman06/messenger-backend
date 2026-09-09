@@ -288,6 +288,12 @@ class Fetch:
     WHERE m.user_id = $1;
     """
 
+    LIST_GROUP_MEMBERSHIPS = """
+    SELECT *
+    FROM memberships
+    WHERE group_id = $1
+    """
+
     # Membership
     MEMBERSHIP_BY_IDS = """
     SELECT *

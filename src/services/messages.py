@@ -5,9 +5,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import src.database.queries as db_queries
+import src.services.websocket as websocket_service
 from src.database.connection import get_conn, get_transaction
 from src.database.enums import Entity as DBEntity
 from src.database.models import DirectMessage, GroupMessage
+from src.redis.events import DirectMessageEvent, GroupMessageEvent
 
 from .errors import (
     DirectMessageNotAllowedError,
@@ -46,7 +48,13 @@ async def send_direct_message(
         logger.info(
             "Direct message %s sent from %s to %s.", dm.message_id, sender_id, recipient_id
         )
-        return dm
+
+    await websocket_service.push_to_user(
+        recipient_id,
+        DirectMessageEvent.from_model(dm),
+    )
+
+    return dm
 
 
 @handle_db_constraint_error()
@@ -93,13 +101,21 @@ async def send_group_message(*, sender_id: UUID, group_id: UUID, content: str) -
 
         message = GroupMessage(group_id=group_id, sender_id=sender_id, content=content)
         msg = await db_queries.send_group_message(conn, message)
+
         logger.info(
             "Group message %s sent to group %s by user %s.",
             msg.message_id,
             group_id,
             sender_id,
         )
-        return msg
+
+    await websocket_service.push_to_group(
+        group_id,
+        GroupMessageEvent.from_model(msg),
+        sender_id=sender_id,
+    )
+
+    return msg
 
 
 @handle_db_constraint_error()

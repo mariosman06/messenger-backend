@@ -3,6 +3,7 @@
 import logging
 from uuid import UUID
 
+import src.services.websocket as websocket_service
 from src.database import queries as db_queries
 from src.database.connection import get_conn, get_transaction
 from src.database.models import Group, Membership
@@ -31,6 +32,7 @@ async def create_group(creator_id: UUID, name: str) -> tuple[Group, Membership]:
             creator_id,
         )
 
+    websocket_service.on_user_joined_group(creator_id, group.group_id)
     return group, membership_entity
 
 
@@ -74,7 +76,9 @@ async def add_member(actor_id: UUID, group_id: UUID, target_user_id: UUID) -> Me
             group_id,
             actor_id,
         )
-        return membership
+
+    websocket_service.on_user_joined_group(target_user_id, group_id)
+    return membership
 
 
 @handle_db_constraint_error()
@@ -115,6 +119,8 @@ async def remove_member(actor_id: UUID, group_id: UUID, target_user_id: UUID) ->
             group_id,
             actor_id,
         )
+
+    websocket_service.on_user_left_group(target_user_id, group_id)
 
 
 @handle_db_constraint_error()

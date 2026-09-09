@@ -297,6 +297,12 @@ async def delete_group(conn: asyncpg.Connection, group_id: UUID, created_by: UUI
         raise NotFoundError(entity=Entity.GROUP, identifier=str(group_id))
 
 
+async def get_group_memberships(conn: asyncpg.Connection, group_id: UUID) -> list[Membership]:
+    """Retrieves user IDs of all members belonging to a specific group."""
+    records = await conn.fetch(Fetch.LIST_GROUP_MEMBERSHIPS, group_id)
+    return Membership.from_records(records)
+
+
 # Membership Operations
 
 

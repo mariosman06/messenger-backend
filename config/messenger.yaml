@@ -11,3 +11,6 @@ database:
   user: messenger_user
   password: "messenger_password_123"
   database: messenger_database
+
+redis:
+  url: "redis://redis:6379/0"

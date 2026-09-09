@@ -11,6 +11,16 @@ services:
       - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
 
+  redis:
+    image: redis:7-alpine
+    container_name: messenger_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+
   app:
     build: .
     container_name: messenger_app

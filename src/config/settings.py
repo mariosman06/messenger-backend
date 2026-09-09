@@ -46,6 +46,12 @@ class DatabaseConfig(BaseModel):
         )
 
 
+class RedisConfig(BaseModel):
+    """Redis connection parameters and URI configuration."""
+
+    url: str = "redis://localhost:6379/0"
+
+
 # Root Application Model
 
 
@@ -55,6 +61,7 @@ class AppConfig(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     database: DatabaseConfig = DatabaseConfig()
     auth: AuthConfig = AuthConfig()
+    redis: RedisConfig = RedisConfig()
 
 
 # Config Loaders
