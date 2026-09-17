@@ -2,17 +2,30 @@
 
 from dataclasses import dataclass, fields
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from src.database.models import DirectMessage, GroupMessage
 
 
+class EventType(StrEnum):
+    DIRECT_MESSAGE = "direct_message"
+    GROUP_MESSAGE = "group_message"
+    GROUP_MEMBERSHIP = "group_membership"
+    GROUP_DELETED = "group_deleted"
+
+
+class MembershipAction(StrEnum):
+    JOIN = "JOIN"
+    LEAVE = "LEAVE"
+
+
 @dataclass(kw_only=True)
 class RedisEvent:
     """Base model for Redis Pub/Sub events with automated serialization."""
 
-    event: str
+    event: EventType
 
     def to_dict(self) -> dict[str, Any]:
         """Converts event attributes to a JSON-compatible dictionary."""
@@ -32,7 +45,7 @@ class RedisEvent:
 class DirectMessageEvent(RedisEvent):
     """Event payload broadcast when a direct message is sent."""
 
-    event: str = "direct_message"
+    event: EventType = EventType.DIRECT_MESSAGE
     message_id: UUID
     sender_id: UUID
     recipient_id: UUID
@@ -41,7 +54,6 @@ class DirectMessageEvent(RedisEvent):
 
     @classmethod
     def from_model(cls, dm: DirectMessage) -> "DirectMessageEvent":
-        """Constructs an event instance directly from a DirectMessage DB model."""
         return cls(
             message_id=dm.message_id,
             sender_id=dm.sender_id,
@@ -55,7 +67,7 @@ class DirectMessageEvent(RedisEvent):
 class GroupMessageEvent(RedisEvent):
     """Event payload broadcast when a group message is sent."""
 
-    event: str = "group_message"
+    event: EventType = EventType.GROUP_MESSAGE
     message_id: UUID
     group_id: UUID
     sender_id: UUID
@@ -64,7 +76,6 @@ class GroupMessageEvent(RedisEvent):
 
     @classmethod
     def from_model(cls, msg: GroupMessage) -> "GroupMessageEvent":
-        """Constructs an event instance directly from a GroupMessage DB model."""
         return cls(
             message_id=msg.message_id,
             group_id=msg.group_id,
@@ -72,3 +83,21 @@ class GroupMessageEvent(RedisEvent):
             content=msg.content,
             created_at=msg.created_at,
         )
+
+
+@dataclass(kw_only=True)
+class GroupMembershipEvent(RedisEvent):
+    """Event payload broadcast when a user joins or leaves a group."""
+
+    event: EventType = EventType.GROUP_MEMBERSHIP
+    action: MembershipAction
+    user_id: UUID
+    group_id: UUID
+
+
+@dataclass(kw_only=True)
+class GroupDeletedEvent(RedisEvent):
+    """Event payload broadcast when a group is deleted."""
+
+    event: EventType = EventType.GROUP_DELETED
+    group_id: UUID

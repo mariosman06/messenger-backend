@@ -10,6 +10,7 @@ from src.database.connection import get_conn, get_transaction
 from src.database.enums import Entity as DBEntity
 from src.database.models import DirectMessage, GroupMessage
 from src.redis.events import DirectMessageEvent, GroupMessageEvent
+from src.utils.tasks import spawn_task
 
 from .errors import (
     DirectMessageNotAllowedError,
@@ -49,9 +50,11 @@ async def send_direct_message(
             "Direct message %s sent from %s to %s.", dm.message_id, sender_id, recipient_id
         )
 
-    await websocket_service.push_to_user(
-        recipient_id,
-        DirectMessageEvent.from_model(dm),
+    spawn_task(
+        websocket_service.push_to_user(
+            recipient_id,
+            DirectMessageEvent.from_model(dm),
+        )
     )
 
     return dm
@@ -109,10 +112,12 @@ async def send_group_message(*, sender_id: UUID, group_id: UUID, content: str) -
             sender_id,
         )
 
-    await websocket_service.push_to_group(
-        group_id,
-        GroupMessageEvent.from_model(msg),
-        sender_id=sender_id,
+    spawn_task(
+        websocket_service.push_to_group(
+            group_id,
+            GroupMessageEvent.from_model(msg),
+            sender_id=sender_id,
+        )
     )
 
     return msg

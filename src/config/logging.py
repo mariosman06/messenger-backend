@@ -27,6 +27,15 @@ class LogContextFilter(logging.Filter):
         return True
 
 
+class SafeStandardFormatter(logging.Formatter):
+    """Standard formatter that safely defaults missing context attributes."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "req_tag"):
+            record.req_tag = ""
+        return super().format(record)
+
+
 class JSONFormatter(logging.Formatter):
     """Formats log records as JSON strings for structured logging."""
 
@@ -34,11 +43,15 @@ class JSONFormatter(logging.Formatter):
         data = {
             "timestamp": self.formatTime(record, "%Y-%m-%d %H:%M:%S"),
             "level": record.levelname,
+            "pid": record.process,
             "logger": record.name,
             "message": record.getMessage(),
         }
-        if getattr(record, "request_id", None):
-            data["request_id"] = record.request_id
+
+        req_id = getattr(record, "request_id", None) or request_id_var.get()
+        if req_id and req_id != "system":
+            data["request_id"] = req_id
+
         if record.exc_info:
             data["exception"] = self.formatException(record.exc_info)
         return json.dumps(data)
@@ -56,7 +69,8 @@ def get_logging_config() -> dict:
         },
         "formatters": {
             "standard": {
-                "format": "%(asctime)s [%(levelname)s] [%(name)s]%(req_tag)s %(message)s",
+                "()": SafeStandardFormatter,
+                "format": "%(asctime)s [%(levelname)s] [pid:%(process)d] [%(name)s]%(req_tag)s %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             },
             "json": {

@@ -33,4 +33,4 @@ async def websocket_endpoint(
             "Unexpected error in WebSocket session for user %s: %s", current_user.user_id, e
         )
     finally:
-        await websocket_service.unregister_connection(current_user.user_id)
+        await websocket_service.unregister_connection(current_user.user_id, websocket)

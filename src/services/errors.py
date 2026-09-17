@@ -226,6 +226,9 @@ CONSTRAINT_MAP: dict[DBConstraint | str, Callable[..., ServiceError]] = {
     DBConstraint.UQ_USERS_USERNAME: lambda **kw: UserAlreadyExistsError(
         username=kw.get("username", "unknown")
     ),
+    DBConstraint.PK_FRIENDSHIPS: lambda **kw: FriendRequestAlreadyExistsError(
+        addressee_id=kw.get("addressee_id", "unknown")
+    ),
     DBConstraint.FK_FRIENDSHIPS_REQUESTER_ID: lambda **kw: UserNotFoundError(
         identifier=kw.get("requester_id", "unknown")
     ),

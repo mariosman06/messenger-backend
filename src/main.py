@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         logger.info("Database schema is up to date.")
 
     await init_redis(url=settings.redis.url)
-    pubsub_task = await start_pubsub_listener()
+    pubsub_task = start_pubsub_listener()
 
     yield
 

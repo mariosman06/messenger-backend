@@ -44,7 +44,7 @@ async def init_pool(dsn: str) -> asyncpg.Pool | None:
         return _pool
 
     logger.info("Initializing database connection pool...")
-    _pool = await asyncpg.create_pool(dsn=dsn)
+    _pool = await asyncpg.create_pool(dsn=dsn, min_size=5, max_size=50, command_timeout=60.0)
     logger.info("Database connection pool initialized successfully.")
     return _pool
 

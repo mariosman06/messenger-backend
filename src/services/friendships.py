@@ -4,7 +4,7 @@ import logging
 from uuid import UUID
 
 import src.database.queries as db_queries
-from src.database.connection import get_conn
+from src.database.connection import get_conn, get_transaction
 from src.database.models import Friendship
 
 from .errors import SelfFriendshipError, handle_db_constraint_error, handle_db_not_found_error
@@ -21,7 +21,7 @@ async def send_request(requester_id: UUID, addressee_id: UUID) -> None:
         )
         raise SelfFriendshipError()
 
-    async with get_conn() as conn:
+    async with get_transaction() as conn:
         await db_queries.send_friend_request(conn, requester_id, addressee_id)
         logger.info("Friend request sent from %s to %s.", requester_id, addressee_id)
 
@@ -29,7 +29,7 @@ async def send_request(requester_id: UUID, addressee_id: UUID) -> None:
 @handle_db_not_found_error()
 async def accept_request(addressee_id: UUID, requester_id: UUID) -> None:
     """Accepts an incoming pending friend request."""
-    async with get_conn() as conn:
+    async with get_transaction() as conn:
         await db_queries.accept_friend_request(conn, requester_id, addressee_id)
         logger.info("Friend request from %s accepted by %s.", requester_id, addressee_id)
 
@@ -37,7 +37,7 @@ async def accept_request(addressee_id: UUID, requester_id: UUID) -> None:
 @handle_db_not_found_error()
 async def remove_or_decline_friendship(user_a: UUID, user_b: UUID) -> None:
     """Removes an active friendship, pending request, or declined relationship between two users."""
-    async with get_conn() as conn:
+    async with get_transaction() as conn:
         await db_queries.remove_friendship(conn, user_a, user_b)
         logger.info("Friendship relationship removed between %s and %s.", user_a, user_b)
 

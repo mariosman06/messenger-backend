@@ -278,6 +278,12 @@ async def list_user_groups(conn: asyncpg.Connection, user_id: UUID) -> list[Grou
     return Group.from_records(records)
 
 
+async def list_group_memberships(conn: asyncpg.Connection, group_id: UUID) -> list[Membership]:
+    """Lists all memberships of a specific group."""
+    records = await conn.fetch(Fetch.LIST_GROUP_MEMBERSHIPS, group_id)
+    return Membership.from_records(records)
+
+
 async def create_group(conn: asyncpg.Connection, group: Group) -> Group:
     """Creates a new group record."""
     try:

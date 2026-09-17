@@ -34,7 +34,8 @@ services:
       - ./tests:/app/tests
       - ./src:/app/src
       - ./config:/data:ro
-    command: ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--no-access-log"]
+    command: ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--no-access-log"]
+
 
 networks:
   default:

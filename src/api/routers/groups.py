@@ -121,3 +121,18 @@ async def remove_member(
     await group_service.remove_member(
         actor_id=current_user.user_id, group_id=group_id, target_user_id=user_id
     )
+
+
+@router.get(
+    "/{group_id}/members",
+    response_model=list[MembershipResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List group members",
+)
+async def list_group_members(
+    group_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> list[MembershipResponse]:
+    """Retrieves all active members for a specific group."""
+    memberships = await group_service.list_group_members(group_id=group_id)
+    return [MembershipResponse.model_validate(m) for m in memberships]

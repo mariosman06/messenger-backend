@@ -18,7 +18,7 @@ async def init_redis(url: str) -> redis.Redis:
     global _pool, _client
     if _client is None:
         logger.info("Initializing Redis connection pool targeting %s", url)
-        _pool = redis.ConnectionPool.from_url(url, decode_responses=True)
+        _pool = redis.ConnectionPool.from_url(url, decode_responses=True, max_connections=70)
         _client = redis.Redis(connection_pool=_pool)
         await _client.ping()
         logger.info("Redis connection pool established successfully.")
