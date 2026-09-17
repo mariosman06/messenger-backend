@@ -1,116 +1,183 @@
 # Messenger Backend
 
-![Tests](https://github.com/mariosman06/messenger-backend/actions/workflows/test.yml/badge.svg)
-![Code Check](https://github.com/mariosman06/messenger-backend/actions/workflows/code_check.yml/badge.svg)
-![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=flat-square&logo=fastapi&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)
-
-A modular, high-performance real-time messaging backend API built with Python, FastAPI, raw SQL via `asyncpg`, and Redis. Designed around Domain-Driven Design (DDD) principles to power real-time direct messaging, group chats, social graph management, WebSocket push notifications, and ultra-fast caching.
+Real-time messaging service built with Python 3.13, FastAPI, PostgreSQL, and Redis. Supports multi-worker horizontal scaling, direct and group messaging, active presence tracking, and local connection multiplexing.
 
 ---
 
-## Features
+### Tech Stack
 
-* **Real-time Push Notifications:** WebSockets integrated with Redis Pub/Sub for horizontally scalable event broadcasting across server instances.
-* **High-Performance Caching:** Redis key-value caching for low-latency session validation, route optimization, and state storage.
-* **Direct & Group Messaging:** Complete conversation lifecycle management, historical pagination, and membership authorization.
-* **Social Graph Management:** Granular friendship request processing and group access control.
-* **Raw SQL Performance:** Asynchronous database interaction using `asyncpg` for maximum query execution speed without ORM overhead.
-* **Reliable Infrastructure:** Built-in connection pooling for PostgreSQL and Redis with automated initialization `PING` health checks.
-
----
-
-## Tech Stack
-
-* **Framework:** [FastAPI](https://fastapi.tiangolo.com/) (Async ASGI)
-* **Cache & Real-time Messaging:** [Redis](https://redis.io/) (In-memory Caching & Pub/Sub Event Bus)
-* **Database & Driver:** PostgreSQL 16 with [asyncpg](https://github.com/MagicStack/asyncpg) (Raw SQL with custom connection pooling)
-* **Validation & Settings:** [Pydantic v2](https://docs.pydantic.dev/) & Pydantic Settings
-* **Package Management:** [uv](https://github.com/astral-sh/uv) (Ultra-fast Python package installer)
-* **Testing & Mocks:** Pytest, Asyncio Pytest, HTTPX AsyncClient
-* **Task Runner:** [just](https://github.com/casey/just)
-* **Containerization:** Docker & Docker Compose
+| Layer | Technology | Role & Key Details |
+| --- | --- | --- |
+| **API & WebSockets** | FastAPI (Python 3.13) | REST API endpoints and stateful WebSocket connections |
+| **Database** | PostgreSQL 16 (`asyncpg`) | Parameterized SQL execution with connection pooling and explicit transaction lifecycles |
+| **Pub/Sub & Presence** | Redis 7 | Inter-worker message broadcasting across distributed nodes and atomic presence counters |
+| **Authentication** | Argon2id + JWT | Offloaded password hashing via worker thread pools and stateless bearer token authentication |
+| **Tooling** | Docker, `just`, `uv` | Multi-container runtime, task runner, and dependency management |
 
 ---
 
-## Architecture Flow
+### System Architecture & Event Flows
+
+#### 1. Message Write & WebSocket Fanout Flow
+
+When a client sends a message via the REST API, authorization checks and database persistence execute within an isolated database transaction. Once committed, the message payload is dispatched asynchronously to a distributed message bus, broadcasting the event across all active worker instances.
 
 ```text
-[ Client ] <--- WebSocket ---> [ FastAPI Server ] <--- Caching & Pub/Sub ---> [ Redis ]
-                                      |
-                                  asyncpg
-                                      |
-                                      v
-                                [ PostgreSQL ]
+[ Sender Client ]
+       │
+  POST Message (Direct or Group)
+       │
+[ API Router ]
+       │
+┌──────▼─────────────────────────────────────────────────────────────────────────┐
+│ Service Layer                                                                  │
+│                                                                                │
+│ 1. Database Transaction:                                                       │
+│    ├── Validate Relationship / Membership Permissions                         │
+│    └── Persist Message Record & Return Payload                                │
+│                                                                                │
+│ 2. Background Dispatch:                                                        │
+│    └── Publish Event Payload to Distributed Message Bus                        │
+└──────┬──────────────────────────────────┬──────────────────────────────────────┘
+       │                                  │
+       │ HTTP 201 Response                │ Broadcast Message Event
+       ▼                                  ▼
+[ Sender Client Response ]         [ Redis Pub/Sub Bus ]
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  │ Broadcast Payload to All Worker Instances     │
+                  ▼                                               ▼
+      ┌─────────────────────────┐                     ┌─────────────────────────┐
+      │     Worker Instance A   │                     │     Worker Instance B   │
+      │    (Event Subscriber)   │                     │    (Event Subscriber)   │
+      └───────────┬─────────────┘                     └───────────┬─────────────┘
+                  │                                               │
+         Resolve Target Sockets                          Resolve Target Sockets
+         in Local Memory Registry                        in Local Memory Registry
+                  │                                               │
+           Sockets Found?                                  Sockets Found?
+             /        \                                      /        \
+          (Yes)       (No)                                (Yes)       (No)
+           /            \                                  /            \
+  Parallel Delivery    Ignore                     Parallel Delivery    Ignore
+  with Timeout                                    with Timeout
+         │                                               │
+         ▼                                               ▼
+[ Recipient Client WS ]                         [ Recipient Client WS ]
 ```
-
-1. **HTTP Endpoints:** Process incoming requests for state changes (e.g., messaging, group modifications, friend requests).
-2. **Database:** Operations execute inside ACID-compliant PostgreSQL transactions using explicit SQL queries.
-3. **Redis Caching & Pub/Sub:** Serves as a high-speed cache for fast data lookups while broadcasting real-time message events across instances to target active WebSockets instantly.
 
 ---
 
-## Getting Started
+#### 2. Worker In-Memory Socket Registry & Routing
 
-### Prerequisites
+Each worker maintains isolated, in-memory state mappings to route messages to connected clients in $O(1)$ time, eliminating database queries during broadcast delivery.
 
-* [Docker](https://www.docker.com/) & Docker Compose
-* [uv](https://github.com/astral-sh/uv) (for local development)
-* [just](https://github.com/casey/just) (optional, command runner)
+```text
+                             Worker Memory Space
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                                                                               │
+│  User Socket Registry:     User ID  ──► Set of Active WebSocket Connections   │
+│                                                                               │
+│  Group Membership Cache:   Group ID ──► Set of Connected Member User IDs      │
+│                                                                               │
+│  Reverse Group Lookup:     User ID  ──► Set of Subscribed Group IDs           │
+│                                                                               │
+│  Concurrency Control:      User ID  ──► Connection Mutex                      │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
 
-### Environment Configuration
+---
 
-Copy the sample environment file and update your configuration if needed:
+#### 3. Connection Lifecycle & Group Synchronization Flow
+
+When a client establishes a WebSocket connection:
+1. The worker acquires a per-user concurrency lock to ensure thread-safe state modification.
+2. The socket is added to the local user socket registry.
+3. The user's active session counter is incremented in the distributed cache.
+4. The user's group memberships are queried from the database and cached in worker memory.
+
+On disconnect, the socket is evicted. If no remaining active sockets exist for that user on the worker, the local group mappings are cleared and the distributed session counter is decremented.
+
+```text
+[ Client Connect ]
+        │
+  Establish Session
+        │
+  ┌─────▼─────────────────────────────────────────────┐
+  │ Acquire User Mutex:                               │
+  │   1. Register Socket in Local Registry            │
+  │   2. Increment Distributed Session Counter        │
+  └─────┬─────────────────────────────────────────────┘
+        │
+  Fetch Active Group Memberships from Database
+        │
+  ┌─────▼─────────────────────────────────────────────┐
+  │ Acquire User Mutex:                               │
+  │   Populate Local Group Membership Registries      │
+  └───────────────────────────────────────────────────┘
+
+[ Client Disconnect ]
+        │
+  Terminate Session
+        │
+  ┌─────▼─────────────────────────────────────────────┐
+  │ Acquire User Mutex:                               │
+  │   1. Evict Socket from Local Registry             │
+  │   2. If Final User Session Closed:                │
+  │      - Clear Local Group Membership Registries    │
+  │      - Decrement Distributed Session Counter      │
+  └───────────────────────────────────────────────────┘
+```
+
+---
+
+### Quickstart
+
+1. Copy the example configuration:
+   ```bash
+   cp config/messenger.yaml.example config/messenger.yaml
+   ```
+
+2. Start the service stack:
+   ```bash
+   docker compose up --build -d
+   ```
+
+OpenAPI documentation is available at `http://localhost:8000/docs` (or the configured host/port defined in `config/messenger.yaml`).
+
+---
+
+### Developer Commands (`justfile`)
 
 ```bash
-cp config/messenger.yaml.example config/messenger.yaml
+just check       # Format and lint code via Ruff
+just test        # Run unit, integration, and e2e multi-worker tests
+just load-test   # Run Locust load testing scenarios
 ```
-
-### Running with Docker Compose
-
-Start the database, Redis, and API services:
-
-```bash
-docker compose up -d --build
-```
-
-The API will be available at `http://localhost:8000` (Interactive docs at `/docs`).
 
 ---
 
-## Local Development & Testing
-
-1. **Install dependencies:**
-   ```bash
-   uv sync
-   ```
-
-2. **Run tests:**
-   Using `just`:
-   ```bash
-   just test
-   ```
-   Or directly with `pytest`:
-   ```bash
-   uv run pytest
-   ```
-
----
-
-## Project Structure
+### Project Structure
 
 ```text
 .
-├── config/             # Environment configuration files
+├── config/               # App and database configuration files
+├── docker-compose.yml    # Service definitions (API workers, Postgres, Redis)
+├── Dockerfile            # Container build specification using uv
+├── justfile              # Shortcut tasks for testing and formatting
+├── pyproject.toml        # Dependencies and tool settings
 ├── src/
-│   ├── api/            # FastAPI routes, dependencies, and WS endpoints
-│   ├── database/       # Connection pooling, raw SQL queries, and models
-│   ├── redis/          # Connection management, caching queries, event schemas, and Pub/Sub
-│   └── services/       # Domain logic (auth, friendships, groups, messages, WS)
-├── tests/              # Integration and unit test suites
-├── docker-compose.yml
-├── justfile
-└── pyproject.toml
+│   ├── api/              # API routers, Pydantic schemas, and dependencies
+│   ├── config/           # App configuration and logger initialization
+│   ├── crypto/           # Password hashing offload and JWT logic
+│   ├── database/         # Connection pooling, SQL queries, and models
+│   ├── redis/            # Pub/Sub background listener and presence logic
+│   ├── services/         # Domain business logic (messages, sockets)
+│   ├── utils/            # Non-blocking task spawning and helpers
+│   └── main.py           # FastAPI entrypoint and startup lifespan
+└── tests/
+    ├── e2e/              # Multi-worker process synchronization tests
+    ├── integration/      # REST endpoint and WebSocket integration tests
+    └── load/             # Locust scenario definitions
 ```
