@@ -3,11 +3,18 @@
 import asyncio
 import json
 import logging
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import pytest
+import yaml
 from fastapi.websockets import WebSocketDisconnect
 from httpx import ASGITransport, AsyncClient
 from testcontainers.community.postgres import PostgresContainer
@@ -20,6 +27,20 @@ from src.redis.connection import close_redis, get_redis, init_redis
 from tests.factories import TestUser, UserFactory
 
 logging.raiseExceptions = False
+
+
+NOISY_LOGGERS = [
+    "httpcore",
+    "httpx",
+    "websockets",
+    "asyncio",
+    "uvicorn",
+    "urllib3",
+    "docker",
+    "testcontainers",
+]
+for logger_name in NOISY_LOGGERS:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 class AsyncWebSocketSession:
@@ -165,3 +186,91 @@ async def client() -> AsyncGenerator[AsyncClient]:
 def user_factory() -> Callable[..., Awaitable[TestUser]]:
     """Fixture providing factory access to create users inside tests."""
     return UserFactory.create
+
+
+@pytest.fixture(scope="session")
+def multi_worker_server(postgres_container, redis_container):
+    """Spawns a live Uvicorn multi-worker process pointing to active Testcontainers."""
+    pg_host = postgres_container.get_container_host_ip()
+    pg_port = postgres_container.get_exposed_port(5432)
+    pg_user = postgres_container.username
+    pg_password = postgres_container.password
+    pg_db = postgres_container.dbname
+
+    redis_host = redis_container.get_container_host_ip()
+    redis_port = redis_container.get_exposed_port(6379)
+    redis_url = f"redis://{redis_host}:{redis_port}/0"
+
+    test_config = {
+        "logging": {"level": "INFO"},
+        "database": {
+            "host": pg_host,
+            "port": pg_port,
+            "user": pg_user,
+            "password": pg_password,
+            "database": pg_db,
+        },
+        "auth": {
+            "access_token_ttl": 900,
+            "refresh_token_ttl": 60400,
+        },
+        "redis": {
+            "url": redis_url,
+        },
+    }
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp_file:
+        yaml.dump(test_config, tmp_file)
+        tmp_config_path = tmp_file.name
+
+    env = os.environ.copy()
+    env["APP_CONFIG_PATH"] = tmp_config_path
+
+    # Set stdout and stderr to None so child Uvicorn logs stream directly to the terminal
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "src.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8888",
+            "--workers",
+            "4",
+        ],
+        env=env,
+        stdout=None,
+        stderr=None,
+        text=True,
+    )
+
+    start_time = time.time()
+    connected = False
+    while time.time() - start_time < 15:
+        if proc.poll() is not None:
+            os.unlink(tmp_config_path)
+            raise RuntimeError("Uvicorn multi-worker process failed to start.")
+        try:
+            with socket.create_connection(("127.0.0.1", 8888), timeout=0.5):
+                connected = True
+                break
+        except (OSError, ConnectionRefusedError):
+            time.sleep(0.2)
+
+    if not connected:
+        proc.kill()
+        os.unlink(tmp_config_path)
+        raise RuntimeError("Uvicorn server timed out starting on port 8888.")
+
+    yield "http://127.0.0.1:8888"
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+    if os.path.exists(tmp_config_path):
+        os.unlink(tmp_config_path)
