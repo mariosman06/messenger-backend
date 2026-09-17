@@ -54,7 +54,7 @@ class TokenPair:
 @handle_db_constraint_error()
 async def register(username: str, password: str) -> tuple[User, TokenPair]:
     """Registers a new user account and issues an initial token pair."""
-    password_hash = hash_password(password)
+    password_hash = await hash_password(password)
     user_model = User(username=username, password_hash=password_hash)
     token_pair = TokenPair.generate()
 
@@ -79,7 +79,7 @@ async def login(username: str, password: str) -> tuple[User, TokenPair]:
     async with get_transaction() as conn:
         user = await db_queries.get_user_by_username(conn, username)
 
-        if not verify_password(password, user.password_hash):
+        if not await verify_password(password, user.password_hash):
             logger.warning("Failed login attempt for username: %s", username)
             raise InvalidCredentialsError()
 
@@ -91,9 +91,9 @@ async def login(username: str, password: str) -> tuple[User, TokenPair]:
             )
             await db_queries.reactivate_user(conn, user.user_id)
 
-        if needs_rehash(user.password_hash):
+        if await needs_rehash(user.password_hash):
             logger.info("Rehashing outdated password for user: %s", user.user_id)
-            new_hash = hash_password(password)
+            new_hash = await hash_password(password)
             await db_queries.update_user_password(
                 conn, user.user_id, new_hash, user.password_hash
             )
