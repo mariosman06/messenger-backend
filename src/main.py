@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api.dependencies import handle_auth_invalidation
 from src.api.routers.auth import router as auth_router
 from src.api.routers.friendships import router as friendships_router
 from src.api.routers.groups import router as groups_router
@@ -23,6 +24,7 @@ from src.database.errors import DatabaseError
 from src.database.queries import ensure_indexes_exist, ensure_tables_exist
 from src.redis.connection import close_redis, init_redis
 from src.redis.errors import RedisError
+from src.redis.stream import listen_to_stream
 from src.services.errors import ServiceError
 from src.services.websocket import start_pubsub_listener
 from src.utils.generators import uuid_v4
@@ -31,6 +33,11 @@ setup_logging()
 logger = logging.getLogger(__name__)
 settings = get_settings()
 logger.info(f"loaded settings: {settings.model_dump()}.")
+
+
+async def async_invalidation_handler(event_dict: dict) -> None:
+    """Wrapper to execute synchronous local cache eviction asynchronously."""
+    handle_auth_invalidation(event_dict)
 
 
 @asynccontextmanager
@@ -44,14 +51,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         logger.info("Database schema is up to date.")
 
     await init_redis(url=settings.redis.url)
+
+    # Start background listeners
     pubsub_task = start_pubsub_listener()
+    stream_task = asyncio.create_task(listen_to_stream(async_invalidation_handler))
 
     yield
 
-    logger.info("Cancelling Pub/Sub background listener...")
+    logger.info("Cancelling background listeners...")
     pubsub_task.cancel()
+    stream_task.cancel()
     try:
-        await pubsub_task
+        await asyncio.gather(pubsub_task, stream_task)
     except asyncio.CancelledError:
         pass
 

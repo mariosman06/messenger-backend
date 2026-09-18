@@ -1,7 +1,9 @@
 """API dependencies for authentication, token extraction, and user context resolution."""
 
-from typing import Annotated
+from typing import Annotated, cast
+from collections.abc import MutableMapping
 
+from cachetools import TTLCache
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -10,16 +12,47 @@ from src.database.connection import get_conn
 from src.database.errors import NotFoundError
 from src.database.models import User
 from src.database.queries import get_access_token, get_user_by_id
+from src.redis.events import EventType
+
+# Local Memory Cache
+LOCAL_TOKEN_CACHE = cast(
+    MutableMapping[str, User], 
+    TTLCache(maxsize=10000, ttl=300)
+)
+
+def evict_local_token(token_hash: str) -> None:
+    """Synchronously drop a token from this specific worker's RAM."""
+    LOCAL_TOKEN_CACHE.pop(token_hash, None)
+
+def handle_auth_invalidation(event_dict: dict) -> None:
+    """
+    Called by the Redis Stream listener. Evicts invalidated tokens/users
+    from this worker's local RAM instantly.
+    """
+    event_type = event_dict.get("event")
+
+    if event_type == EventType.TOKEN_REVOKED:
+        token_hash = event_dict.get("token_hash")
+        if token_hash:
+            LOCAL_TOKEN_CACHE.pop(token_hash, None)
+
+    elif event_type == EventType.USER_INVALIDATED:
+        user_id = event_dict.get("user_id")
+        if user_id:
+            hashes_to_remove = [
+                t_hash
+                for t_hash, user in LOCAL_TOKEN_CACHE.items()
+                if str(user.user_id) == str(user_id)
+            ]
+            for t_hash in hashes_to_remove:
+                LOCAL_TOKEN_CACHE.pop(t_hash, None)
+
 
 # Security Schemes
-
-
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # Token Extractors
-
-
 async def get_raw_access_token(
     auth: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> str | None:
@@ -28,8 +61,6 @@ async def get_raw_access_token(
 
 
 # Authentication Dependencies
-
-
 async def _resolve_current_user(
     raw_token: Annotated[str | None, Depends(get_raw_access_token)],
     allow_deactivated: bool = False,
@@ -44,6 +75,18 @@ async def _resolve_current_user(
 
     token_hash = hash_token(raw_token)
 
+    # 1. Check local RAM cache first
+    cached_user = LOCAL_TOKEN_CACHE.get(token_hash)
+    if cached_user:
+        if not allow_deactivated and cached_user.deactivated:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is deactivated.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return cached_user
+
+    # 2. Cache miss. Validate against PostgreSQL.
     async with get_conn() as conn:
         try:
             token_record = await get_access_token(conn, token_hash)
@@ -77,6 +120,8 @@ async def _resolve_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # 3. Save to local RAM cache
+        LOCAL_TOKEN_CACHE[token_hash] = user
         return user
 
 

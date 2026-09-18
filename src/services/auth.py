@@ -16,7 +16,10 @@ from src.database.connection import get_transaction
 from src.database.enums import Constraint as DBConstraint
 from src.database.enums import Entity as DBEntity
 from src.database.models import AccessToken, RefreshToken, User
+from src.redis.events import TokenRevokedEvent, UserInvalidatedEvent
+from src.redis.stream import publish_stream_event
 from src.utils.timestamps import expiration_ts
+from src.api.dependencies import evict_local_token
 
 from .errors import (
     InvalidCredentialsError,
@@ -61,8 +64,9 @@ async def register(username: str, password: str) -> tuple[User, TokenPair]:
     async with get_transaction() as conn:
         user = await db_queries.create_user(conn, user_model)
         await _issue_token_pair(conn, user.user_id, token_pair)
-        logger.info("User registered successfully: %s (id: %s)", user.username, user.user_id)
-        return user, token_pair
+
+    logger.info("User registered successfully: %s (id: %s)", user.username, user.user_id)
+    return user, token_pair
 
 
 @handle_db_constraint_error(
@@ -75,6 +79,7 @@ async def register(username: str, password: str) -> tuple[User, TokenPair]:
 async def login(username: str, password: str) -> tuple[User, TokenPair]:
     """Authenticates credentials, handles password re-hashing, and issues fresh tokens."""
     token_pair = TokenPair.generate()
+    cache_needs_invalidation = False
 
     async with get_transaction() as conn:
         user = await db_queries.get_user_by_username(conn, username)
@@ -84,12 +89,9 @@ async def login(username: str, password: str) -> tuple[User, TokenPair]:
             raise InvalidCredentialsError()
 
         if user.deactivated:
-            logger.info(
-                "Reactivating deactivated account during login for user: %s (id: %s)",
-                user.username,
-                user.user_id,
-            )
+            logger.info("Reactivating account during login for user: %s", user.user_id)
             await db_queries.reactivate_user(conn, user.user_id)
+            cache_needs_invalidation = True
 
         if await needs_rehash(user.password_hash):
             logger.info("Rehashing outdated password for user: %s", user.user_id)
@@ -97,10 +99,16 @@ async def login(username: str, password: str) -> tuple[User, TokenPair]:
             await db_queries.update_user_password(
                 conn, user.user_id, new_hash, user.password_hash
             )
+            cache_needs_invalidation = True
 
         await _issue_token_pair(conn, user.user_id, token_pair)
-        logger.info("User logged in successfully: %s (id: %s)", user.username, user.user_id)
-        return user, token_pair
+
+    # Publish to Redis Stream ONLY if the DB transaction committed successfully
+    if cache_needs_invalidation:
+        await publish_stream_event(UserInvalidatedEvent(user_id=user.user_id))
+
+    logger.info("User logged in successfully: %s (id: %s)", user.username, user.user_id)
+    return user, token_pair
 
 
 @handle_db_constraint_error()
@@ -110,30 +118,32 @@ async def refresh(raw_refresh_token: str) -> TokenPair:
     refresh_hash = hash_token(raw_refresh_token)
     token_pair = TokenPair.generate()
     is_reused = False
+    user_id = None
 
     async with get_transaction() as conn:
         token_record = await db_queries.get_refresh_token(conn, refresh_hash, for_update=True)
+        user_id = token_record.user_id
 
         if token_record.is_revoked:
-            logger.warning(
-                "Token reuse detected for user: %s! Revoking all active tokens.",
-                token_record.user_id,
-            )
-            await db_queries.revoke_all_user_access_tokens(conn, token_record.user_id)
-            await db_queries.revoke_all_user_refresh_tokens(conn, token_record.user_id)
+            logger.warning("Token reuse detected for user: %s!", user_id)
+            await db_queries.revoke_all_user_access_tokens(conn, user_id)
+            await db_queries.revoke_all_user_refresh_tokens(conn, user_id)
             is_reused = True
         elif token_record.is_expired:
-            logger.info(
-                "Refresh attempt with expired token for user: %s", token_record.user_id
-            )
+            logger.info("Refresh attempt with expired token for user: %s", user_id)
             raise TokenExpiredError()
         else:
             await db_queries.revoke_refresh_token(conn, refresh_hash)
-            await _issue_token_pair(conn, token_record.user_id, token_pair)
-            logger.info("Tokens rotated successfully for user: %s", token_record.user_id)
+            await _issue_token_pair(conn, user_id, token_pair)
+            logger.info("Tokens rotated successfully for user: %s", user_id)
 
-    if is_reused:
+    # Post-transaction cache invalidation
+    if is_reused and user_id:
+        await publish_stream_event(UserInvalidatedEvent(user_id=user_id))
         raise TokenRevokedError()
+    else:
+        # Clear the old refresh token from memory in case it's cached anywhere
+        await publish_stream_event(TokenRevokedEvent(token_hash=refresh_hash))
 
     return token_pair
 
@@ -148,12 +158,23 @@ async def logout(raw_refresh_token: str, raw_access_token: str | None = None) ->
     """Revokes refresh and optional access tokens silently."""
     refresh_hash = hash_token(raw_refresh_token)
     access_hash = hash_token(raw_access_token) if raw_access_token else None
+    
+
 
     async with get_transaction() as conn:
         await db_queries.revoke_refresh_token(conn, refresh_hash)
-
         if access_hash:
             await db_queries.revoke_access_token(conn, access_hash)
+
+    if access_hash:
+        evict_local_token(access_hash)
+
+
+
+    # Tell all API workers to drop these tokens from their local RAM
+    await publish_stream_event(TokenRevokedEvent(token_hash=refresh_hash))
+    if access_hash:
+        await publish_stream_event(TokenRevokedEvent(token_hash=access_hash))
 
     logger.info("User session logged out successfully.")
 

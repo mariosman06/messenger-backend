@@ -1,4 +1,4 @@
-"""Redis event models for WebSocket payloads."""
+"""Redis event models for WebSocket payloads and System Streams."""
 
 from dataclasses import dataclass, fields
 from datetime import datetime
@@ -10,10 +10,15 @@ from src.database.models import DirectMessage, GroupMessage
 
 
 class EventType(StrEnum):
+    # WebSocket Client Events
     DIRECT_MESSAGE = "direct_message"
     GROUP_MESSAGE = "group_message"
     GROUP_MEMBERSHIP = "group_membership"
     GROUP_DELETED = "group_deleted"
+
+    # System Cache Invalidation Events
+    USER_INVALIDATED = "user_invalidated"
+    TOKEN_REVOKED = "token_revoked"
 
 
 class MembershipAction(StrEnum):
@@ -23,7 +28,7 @@ class MembershipAction(StrEnum):
 
 @dataclass(kw_only=True)
 class RedisEvent:
-    """Base model for Redis Pub/Sub events with automated serialization."""
+    """Base model for Redis events with automated serialization."""
 
     event: EventType
 
@@ -36,9 +41,14 @@ class RedisEvent:
                 data[f.name] = str(val)
             elif isinstance(val, datetime):
                 data[f.name] = val.isoformat()
+            elif isinstance(val, StrEnum):
+                data[f.name] = val.value
             else:
                 data[f.name] = val
         return data
+
+
+# WebSocket Client Events
 
 
 @dataclass(kw_only=True)
@@ -101,3 +111,22 @@ class GroupDeletedEvent(RedisEvent):
 
     event: EventType = EventType.GROUP_DELETED
     group_id: UUID
+
+
+# System Invalidation Events
+
+
+@dataclass(kw_only=True)
+class UserInvalidatedEvent(RedisEvent):
+    """Broadcast when a user password changes, account is deactivated, or global logout occurs."""
+
+    event: EventType = EventType.USER_INVALIDATED
+    user_id: UUID
+
+
+@dataclass(kw_only=True)
+class TokenRevokedEvent(RedisEvent):
+    """Broadcast when a specific token is logged out or rotated."""
+
+    event: EventType = EventType.TOKEN_REVOKED
+    token_hash: str
