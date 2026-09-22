@@ -160,12 +160,14 @@ class EnsureTableExists(metaclass=IterableStatements):
 class EnsureIndexExists(metaclass=IterableStatements):
     """SQL DDL statements for creating indexes across database tables."""
 
-    # User
-
     # Friendship
     IDX_FRIENDSHIPS_ADDRESSEE_ID = f"""
     CREATE INDEX IF NOT EXISTS {Index.IDX_FRIENDSHIPS_ADDRESSEE_ID}
     ON friendships(addressee_id, accepted);
+    """
+    IDX_FRIENDSHIPS_REQUESTER_ID = """
+    CREATE INDEX IF NOT EXISTS idx_friendships_requester_id
+    ON friendships(requester_id, accepted);
     """
 
     # Token
@@ -195,7 +197,7 @@ class EnsureIndexExists(metaclass=IterableStatements):
     # Membership
     IDX_MEMBERSHIPS_USER_ID = f"""
     CREATE INDEX IF NOT EXISTS {Index.IDX_MEMBERSHIPS_USER_ID}
-    ON memberships(user_id);
+    ON memberships(user_id, group_id);
     """
 
     # Messages
@@ -234,8 +236,7 @@ class Fetch:
     USER_FOR_SHARE = """
     SELECT *
     FROM users
-    WHERE user_id = $1
-    FOR SHARE;
+    WHERE user_id = $1;
     """
 
     # Friendship
@@ -243,19 +244,23 @@ class Fetch:
     SELECT *
     FROM friendships
     WHERE (requester_id = $1 AND addressee_id = $2)
-       OR (requester_id = $2 AND addressee_id = $1);
+       OR (requester_id = $2 AND addressee_id = $1)
+    LIMIT 1;
     """
     FRIENDSHIP_FOR_SHARE = """
     SELECT *
     FROM friendships
     WHERE ((requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1))
-      AND accepted = TRUE
-    FOR SHARE;
+      AND accepted = TRUE;
     """
     LIST_ACCEPTED_FRIENDS = """
     SELECT *
     FROM friendships
-    WHERE (requester_id = $1 OR addressee_id = $1) AND accepted = TRUE;
+    WHERE requester_id = $1 AND accepted = TRUE
+    UNION ALL
+    SELECT *
+    FROM friendships
+    WHERE addressee_id = $1 AND accepted = TRUE;
     """
     LIST_PENDING_REQUESTS = """
     SELECT *
@@ -291,7 +296,7 @@ class Fetch:
     LIST_GROUP_MEMBERSHIPS = """
     SELECT *
     FROM memberships
-    WHERE group_id = $1
+    WHERE group_id = $1;
     """
 
     # Membership
@@ -303,16 +308,22 @@ class Fetch:
     MEMBERSHIP_FOR_SHARE = """
     SELECT *
     FROM memberships
-    WHERE group_id = $1 AND user_id = $2
-    FOR SHARE;
+    WHERE group_id = $1 AND user_id = $2;
     """
 
     # Messages
     DM_CONVERSATION_HISTORY = """
-    SELECT *
-    FROM direct_messages
-    WHERE ((sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1))
-      AND created_at < $3
+    (SELECT *
+     FROM direct_messages
+     WHERE sender_id = $1 AND recipient_id = $2 AND created_at < $3
+     ORDER BY created_at DESC
+     LIMIT $4)
+    UNION ALL
+    (SELECT *
+     FROM direct_messages
+     WHERE sender_id = $2 AND recipient_id = $1 AND created_at < $3
+     ORDER BY created_at DESC
+     LIMIT $4)
     ORDER BY created_at DESC
     LIMIT $4;
     """
@@ -386,7 +397,7 @@ class Write:
     WHERE user_id = $1;
     """
     REVOKE_ALL_USER_REFRESH_TOKENS = """
-    UPDATE refresh_tokens
+    UPDATE access_tokens
     SET is_revoked = TRUE
     WHERE user_id = $1;
     """
@@ -455,5 +466,3 @@ class Delete:
     DELETE FROM memberships
     WHERE group_id = $1 AND user_id = $2;
     """
-
-    # Messages
