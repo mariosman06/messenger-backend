@@ -20,14 +20,16 @@ from httpx import ASGITransport, AsyncClient
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
-from src.database.connection import close_pool, get_conn, init_pool
+from src.database.connection import DatabaseManager
 from src.database.queries import clear_tables, ensure_indexes_exist, ensure_tables_exist
 from src.main import app
-from src.redis.connection import close_redis, get_redis, init_redis
+from src.redis.connection import RedisManager
+from src.redis.stream import listen_to_stream
+from src.services.auth import TokenCache
+from src.services.websocket import WebSocketManager
 from tests.factories import TestUser, UserFactory
 
 logging.raiseExceptions = False
-
 
 NOISY_LOGGERS = [
     "httpcore",
@@ -134,45 +136,79 @@ async def websocket_connect(path: str):
 
 @pytest.fixture(scope="session")
 def postgres_container():
+    """Starts a PostgreSQL test container for the duration of the test session."""
     with PostgresContainer("postgres:16-alpine") as postgres:
         yield postgres
 
 
 @pytest.fixture(scope="session")
 def redis_container():
+    """Starts a Redis test container for the duration of the test session."""
     with RedisContainer("redis:7-alpine") as redis:
         yield redis
 
 
 @pytest.fixture(scope="session", autouse=True)
 async def initialize_infrastructure(postgres_container, redis_container):
-    """Initializes PostgreSQL pool and Redis client for the test session."""
+    """Initializes DatabaseManager, RedisManager, and services for in-process tests."""
     postgres_dsn = postgres_container.get_connection_url().replace(
         "postgresql+psycopg2", "postgresql"
     )
     redis_url = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(6379)}/0"
 
-    await init_pool(dsn=postgres_dsn)
-    await init_redis(url=redis_url)
+    # Instantiate managers with test container endpoints
+    db_manager = DatabaseManager(dsn=postgres_dsn, min_size=2, max_size=10)
+    await db_manager.connect()
 
-    async with get_conn() as conn:
+    redis_manager = RedisManager(url=redis_url, max_connections=20)
+    await redis_manager.connect()
+
+    auth_cache = TokenCache()
+    ws_manager = WebSocketManager(db=db_manager, redis=redis_manager.client)
+
+    # Attach to app.state for in-process ASGI clients
+    app.state.db = db_manager
+    app.state.redis = redis_manager
+    app.state.auth_cache = auth_cache
+    app.state.ws_manager = ws_manager
+
+    # Initialize schema and indexes
+    async with db_manager.connection() as conn:
         await ensure_tables_exist(conn)
         await ensure_indexes_exist(conn)
 
+    # Start background listeners
+    pubsub_task = ws_manager.start_pubsub_listener()
+    stream_task = asyncio.create_task(
+        listen_to_stream(
+            client=redis_manager.client,
+            message_handler=auth_cache.handle_invalidation_event,
+        )
+    )
+
     yield
 
-    await close_redis()
-    await close_pool()
+    # Teardown background tasks
+    pubsub_task.cancel()
+    stream_task.cancel()
+    try:
+        await asyncio.gather(pubsub_task, stream_task)
+    except asyncio.CancelledError:
+        pass
+
+    # Teardown connection pools
+    await redis_manager.disconnect()
+    await db_manager.disconnect()
 
 
 @pytest.fixture(scope="function", autouse=True)
 async def clear_state_between_tests():
-    """Truncates DB tables and flushes Redis keys between each test."""
-    async with get_conn() as conn:
+    """Truncates DB tables, flushes Redis keys, and clears RAM cache between tests."""
+    async with app.state.db.connection() as conn:
         await clear_tables(conn)
 
-    redis_client = get_redis()
-    await redis_client.flushdb()
+    await app.state.redis.client.flushdb()
+    app.state.auth_cache.clear()
 
 
 @pytest.fixture
@@ -212,7 +248,7 @@ def multi_worker_server(postgres_container, redis_container):
         },
         "auth": {
             "access_token_ttl": 900,
-            "refresh_token_ttl": 60400,
+            "refresh_token_ttl": 604800,
         },
         "redis": {
             "url": redis_url,

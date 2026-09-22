@@ -1,3 +1,5 @@
+"""Integration tests for WebSocket authentication, real-time message delivery, and routing."""
+
 import asyncio
 from unittest.mock import patch
 from uuid import UUID
@@ -6,6 +8,7 @@ import pytest
 from fastapi.websockets import WebSocketDisconnect
 
 import src.services.websocket as websocket_service
+from src.main import app
 from tests.conftest import websocket_connect
 from tests.factories import TestUser
 
@@ -46,8 +49,9 @@ async def test_websocket_direct_message_realtime_push(client, user_factory):
         headers=bob.headers,
     )
 
-    async def mock_publish(channel: str, payload: dict):
-        await websocket_service._dispatch_local_message(payload)
+    async def mock_publish(*args, **kwargs):
+        payload = args[-1] if args else kwargs["payload"]
+        await app.state.ws_manager._dispatch_local_message(payload)
 
     with patch.object(websocket_service, "publish_ws_push", side_effect=mock_publish):
         async with websocket_connect(f"/ws?token={bob.tokens.access_token}") as bob_ws:
@@ -87,8 +91,9 @@ async def test_websocket_group_message_realtime_push(client, user_factory):
         headers=alice.headers,
     )
 
-    async def mock_publish(channel: str, payload: dict):
-        await websocket_service._dispatch_local_message(payload)
+    async def mock_publish(*args, **kwargs):
+        payload = args[-1] if args else kwargs["payload"]
+        await app.state.ws_manager._dispatch_local_message(payload)
 
     with patch.object(websocket_service, "publish_ws_push", side_effect=mock_publish):
         async with websocket_connect(f"/ws?token={bob.tokens.access_token}") as bob_ws:
@@ -137,8 +142,9 @@ async def test_websocket_revoking_group_membership_blocks_pushes(client, user_fa
         headers=alice.headers,
     )
 
-    async def mock_publish(channel: str, payload: dict):
-        await websocket_service._dispatch_local_message(payload)
+    async def mock_publish(*args, **kwargs):
+        payload = args[-1] if args else kwargs["payload"]
+        await app.state.ws_manager._dispatch_local_message(payload)
 
     with patch.object(websocket_service, "publish_ws_push", side_effect=mock_publish):
         async with websocket_connect(f"/ws?token={bob.tokens.access_token}") as bob_ws:
