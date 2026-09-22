@@ -1,5 +1,23 @@
 # Distributed Real-Time Messaging Engine
 
+<!-- Core & Runtime -->
+![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/Framework-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![uvloop](https://img.shields.io/badge/Event%20Loop-uvloop-4B8BBE?style=flat-square)
+
+<!-- Storage & Async Bus -->
+![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL_16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Redis PubSub](https://img.shields.io/badge/Bus-Redis_7_Pub%2FSub-DC382D?style=flat-square&logo=redis&logoColor=white)
+![Redis Streams](https://img.shields.io/badge/State-Redis_Streams-DC382D?style=flat-square&logo=redis&logoColor=white)
+
+<!-- Tooling & QA -->
+![uv](https://img.shields.io/badge/Package_Manager-uv-DE5D43?style=flat-square&logo=astral&logoColor=white)
+![Ruff](https://img.shields.io/badge/Code_Style-Ruff-261230?style=flat-square&logo=ruff&logoColor=white)
+![Pytest](https://img.shields.io/badge/Test_Runner-Pytest-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![Locust](https://img.shields.io/badge/Load_Tests-Locust-2B2B2B?style=flat-square&logo=locust&logoColor=white)
+![Docker](https://img.shields.io/badge/Container-Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+
+
 A high-throughput, horizontally scalable messaging and presence backend designed for multi-worker distributed setups. The system pairs FastAPI stateful WebSocket connections with a single-channel Redis Pub/Sub broadcast bus, asyncpg connection pooling, and a two-tier authentication strategy with cluster-wide cache invalidation.
 
 ---

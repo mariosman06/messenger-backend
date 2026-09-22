@@ -397,7 +397,7 @@ class Write:
     WHERE user_id = $1;
     """
     REVOKE_ALL_USER_REFRESH_TOKENS = """
-    UPDATE access_tokens
+    UPDATE refresh_tokens
     SET is_revoked = TRUE
     WHERE user_id = $1;
     """
