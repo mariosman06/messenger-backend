@@ -6,8 +6,6 @@ from functools import lru_cache
 import yaml
 from pydantic import BaseModel, PostgresDsn
 
-# Configuration Sub-models
-
 
 class LoggingConfig(BaseModel):
     """Logging system settings including log verbosity levels."""
@@ -30,6 +28,9 @@ class DatabaseConfig(BaseModel):
     user: str = "postgres"
     password: str = ""
     database: str = "app_db"
+    min_pool_size: int = 5
+    max_pool_size: int = 70
+    command_timeout: float = 60.0
 
     @property
     def dsn(self) -> str:
@@ -50,9 +51,7 @@ class RedisConfig(BaseModel):
     """Redis connection parameters and URI configuration."""
 
     url: str = "redis://localhost:6379/0"
-
-
-# Root Application Model
+    max_connections: int = 100
 
 
 class AppConfig(BaseModel):
@@ -62,9 +61,6 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = DatabaseConfig()
     auth: AuthConfig = AuthConfig()
     redis: RedisConfig = RedisConfig()
-
-
-# Config Loaders
 
 
 def load_config_file(config_path: str) -> dict:

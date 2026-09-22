@@ -30,11 +30,15 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/src
       - APP_CONFIG_PATH=/data/messenger.yaml
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
       - ./tests:/app/tests
       - ./src:/app/src
       - ./config:/data:ro
-    command: ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--no-access-log"]
+    command: ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--loop", "uvloop", "--no-access-log"]
 
 
 networks:

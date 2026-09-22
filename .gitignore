@@ -7,6 +7,7 @@ data/
 .env
 .env.*
 !.env.example
+config/messenger.yaml
 
 # Python & Build Artifacts
 __pycache__/
