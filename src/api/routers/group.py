@@ -1,24 +1,18 @@
 """Group management API router handling group creation, details, deletion, and membership."""
 
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, status
 
-import src.services.groups as group_service
-from src.api.dependencies import get_current_user
+from src.api.dependencies import CurrentUser, GroupServiceDep
 from src.api.schemas import (
     AddGroupMemberRequest,
     CreateGroupRequest,
     GroupResponse,
     MembershipResponse,
 )
-from src.database.models import User
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
-
-
-# Group Endpoints
 
 
 @router.post(
@@ -29,7 +23,8 @@ router = APIRouter(prefix="/groups", tags=["Groups"])
 )
 async def create_group(
     payload: CreateGroupRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> GroupResponse:
     """Creates a new group chat entity with the calling user as creator and initial member."""
     group, _ = await group_service.create_group(
@@ -45,13 +40,12 @@ async def create_group(
     summary="List joined groups",
 )
 async def list_groups(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> list[GroupResponse]:
     """Retrieves all active groups that the calling user belongs to."""
-    return [
-        GroupResponse.model_validate(g)
-        for g in await group_service.list_user_groups(user_id=current_user.user_id)
-    ]
+    groups = await group_service.list_user_groups(user_id=current_user.user_id)
+    return [GroupResponse.model_validate(g) for g in groups]
 
 
 @router.get(
@@ -62,12 +56,14 @@ async def list_groups(
 )
 async def get_group(
     group_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> GroupResponse:
     """Fetches details for a specific group if the calling user is an active member."""
-    return GroupResponse.model_validate(
-        await group_service.get_group_details(actor_id=current_user.user_id, group_id=group_id)
+    group = await group_service.get_group_details(
+        actor_id=current_user.user_id, group_id=group_id
     )
+    return GroupResponse.model_validate(group)
 
 
 @router.delete(
@@ -77,13 +73,11 @@ async def get_group(
 )
 async def delete_group(
     group_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> None:
     """Deletes an entire group. Restricted exclusively to the group's creator."""
     await group_service.delete_group(actor_id=current_user.user_id, group_id=group_id)
-
-
-# Group Member Endpoints
 
 
 @router.post(
@@ -95,16 +89,16 @@ async def delete_group(
 async def add_member(
     group_id: UUID,
     payload: AddGroupMemberRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> MembershipResponse:
     """Adds a target user to an existing group."""
-    return MembershipResponse.model_validate(
-        await group_service.add_member(
-            actor_id=current_user.user_id,
-            group_id=group_id,
-            target_user_id=payload.user_id,
-        )
+    membership = await group_service.add_member(
+        actor_id=current_user.user_id,
+        group_id=group_id,
+        target_user_id=payload.user_id,
     )
+    return MembershipResponse.model_validate(membership)
 
 
 @router.delete(
@@ -115,9 +109,10 @@ async def add_member(
 async def remove_member(
     group_id: UUID,
     user_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> None:
-    """Removes a user from a group (handles voluntary leaving or creator-driven removal)."""
+    """Removes a user from a group (handles self-removal or creator removal)."""
     await group_service.remove_member(
         actor_id=current_user.user_id, group_id=group_id, target_user_id=user_id
     )
@@ -131,7 +126,8 @@ async def remove_member(
 )
 async def list_group_members(
     group_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    _current_user: CurrentUser,
+    group_service: GroupServiceDep,
 ) -> list[MembershipResponse]:
     """Retrieves all active members for a specific group."""
     memberships = await group_service.list_group_members(group_id=group_id)

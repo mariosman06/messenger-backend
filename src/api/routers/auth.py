@@ -1,11 +1,14 @@
-"""Authentication API router handling user registration, login, token refresh, profile retrieval, and logout."""
+"""Authentication API router handling registration, login, token refresh, and logout."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-import src.services.auth as auth_service
-from src.api.dependencies import get_current_user, get_raw_access_token
+from src.api.dependencies import (
+    AuthServiceDep,
+    CurrentUser,
+    get_raw_access_token,
+)
 from src.api.schemas import (
     AuthResponse,
     LoginRequest,
@@ -15,12 +18,8 @@ from src.api.schemas import (
     TokenPairResponse,
     UserResponse,
 )
-from src.database.models import User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-
-
-# Auth Endpoints
 
 
 @router.post(
@@ -29,7 +28,10 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
 )
-async def register(payload: RegisterRequest) -> AuthResponse:
+async def register(
+    payload: RegisterRequest,
+    auth_service: AuthServiceDep,
+) -> AuthResponse:
     """Registers a new user account and issues an initial token pair."""
     u, t = await auth_service.register(username=payload.username, password=payload.password)
     return AuthResponse(
@@ -43,7 +45,10 @@ async def register(payload: RegisterRequest) -> AuthResponse:
     status_code=status.HTTP_200_OK,
     summary="Authenticate user credentials",
 )
-async def login(payload: LoginRequest) -> AuthResponse:
+async def login(
+    payload: LoginRequest,
+    auth_service: AuthServiceDep,
+) -> AuthResponse:
     """Authenticates user credentials and returns a fresh token pair."""
     u, t = await auth_service.login(username=payload.username, password=payload.password)
     return AuthResponse(
@@ -57,11 +62,13 @@ async def login(payload: LoginRequest) -> AuthResponse:
     status_code=status.HTTP_200_OK,
     summary="Refresh authentication tokens",
 )
-async def refresh(payload: RefreshRequest) -> TokenPairResponse:
+async def refresh(
+    payload: RefreshRequest,
+    auth_service: AuthServiceDep,
+) -> TokenPairResponse:
     """Rotates an existing refresh token and returns a new token pair."""
-    return TokenPairResponse.model_validate(
-        await auth_service.refresh(raw_refresh_token=payload.refresh_token)
-    )
+    token_pair = await auth_service.refresh(raw_refresh_token=payload.refresh_token)
+    return TokenPairResponse.model_validate(token_pair)
 
 
 @router.get(
@@ -70,7 +77,7 @@ async def refresh(payload: RefreshRequest) -> TokenPairResponse:
     status_code=status.HTTP_200_OK,
     summary="Get current user profile",
 )
-async def get_me(current_user: Annotated[User, Depends(get_current_user)]) -> UserResponse:
+async def get_me(current_user: CurrentUser) -> UserResponse:
     """Retrieves the authenticated user's profile information."""
     return UserResponse.model_validate(current_user)
 
@@ -82,9 +89,10 @@ async def get_me(current_user: Annotated[User, Depends(get_current_user)]) -> Us
 )
 async def logout(
     payload: LogoutRequest,
+    auth_service: AuthServiceDep,
     raw_access_token: Annotated[str | None, Depends(get_raw_access_token)],
 ) -> None:
-    """Revokes refresh and optional access tokens to terminate the user session."""
+    """Revokes refresh and optional access tokens across database, cache, and redis stream."""
     await auth_service.logout(
         raw_refresh_token=payload.refresh_token, raw_access_token=raw_access_token
     )

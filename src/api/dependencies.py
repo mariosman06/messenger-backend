@@ -1,84 +1,87 @@
-"""API dependencies for authentication, token extraction, and user context resolution."""
+"""API dependencies for authentication, token extraction, and service resolution."""
 
-from typing import Annotated, cast
-from collections.abc import MutableMapping
+import logging
+from typing import Annotated
 
-from cachetools import TTLCache
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.asyncio import Redis
 
+import src.database.queries as db_queries
 from src.crypto.tokens import hash_token
-from src.database.connection import get_conn
+from src.database.connection import DatabaseManager
 from src.database.errors import NotFoundError
 from src.database.models import User
-from src.database.queries import get_access_token, get_user_by_id
-from src.redis.events import EventType
+from src.services.auth import AuthService, TokenCache
+from src.services.group import GroupService
+from src.services.messaging import MessagingService
+from src.services.user import UserService
+from src.services.websocket import WebSocketManager
 
-# Local Memory Cache
-LOCAL_TOKEN_CACHE = cast(
-    MutableMapping[str, User], 
-    TTLCache(maxsize=10000, ttl=300)
-)
+logger = logging.getLogger(__name__)
 
-def evict_local_token(token_hash: str) -> None:
-    """Synchronously drop a token from this specific worker's RAM."""
-    LOCAL_TOKEN_CACHE.pop(token_hash, None)
-
-def handle_auth_invalidation(event_dict: dict) -> None:
-    """
-    Called by the Redis Stream listener. Evicts invalidated tokens/users
-    from this worker's local RAM instantly.
-    """
-    event_type = event_dict.get("event")
-
-    if event_type == EventType.TOKEN_REVOKED:
-        token_hash = event_dict.get("token_hash")
-        if token_hash:
-            LOCAL_TOKEN_CACHE.pop(token_hash, None)
-
-    elif event_type == EventType.USER_INVALIDATED:
-        user_id = event_dict.get("user_id")
-        if user_id:
-            hashes_to_remove = [
-                t_hash
-                for t_hash, user in LOCAL_TOKEN_CACHE.items()
-                if str(user.user_id) == str(user_id)
-            ]
-            for t_hash in hashes_to_remove:
-                LOCAL_TOKEN_CACHE.pop(t_hash, None)
+security = HTTPBearer(auto_error=False)
 
 
-# Security Schemes
-bearer_scheme = HTTPBearer(auto_error=False)
+# HTTP infrastructure extractors from app.state
+def get_db(request: Request) -> DatabaseManager:
+    """Retrieves DatabaseManager instance from app state."""
+    return request.app.state.db
 
 
-# Token Extractors
-async def get_raw_access_token(
-    auth: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+def get_redis(request: Request) -> Redis:
+    """Retrieves active Redis client instance from app state."""
+    return request.app.state.redis.client
+
+
+def get_ws_manager(request: Request) -> WebSocketManager:
+    """Retrieves WebSocketManager instance from app state."""
+    return request.app.state.ws_manager
+
+
+def get_token_cache(request: Request) -> TokenCache:
+    """Retrieves worker-local TokenCache instance from app state."""
+    return request.app.state.auth_cache
+
+
+# WebSocket infrastructure extractors from app.state
+def get_db_ws(websocket: WebSocket) -> DatabaseManager:
+    """Retrieves DatabaseManager instance from WebSocket app state."""
+    return websocket.app.state.db
+
+
+def get_token_cache_ws(websocket: WebSocket) -> TokenCache:
+    """Retrieves worker-local TokenCache instance from WebSocket app state."""
+    return websocket.app.state.auth_cache
+
+
+def get_ws_manager_ws(websocket: WebSocket) -> WebSocketManager:
+    """Retrieves WebSocketManager instance from WebSocket app state."""
+    return websocket.app.state.ws_manager
+
+
+# Token extraction helper
+def get_raw_access_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
 ) -> str | None:
-    """Extracts the raw bearer token string from the HTTP Authorization header if present."""
-    return auth.credentials if auth else None
+    """Extracts the raw bearer token string if present."""
+    return credentials.credentials if credentials else None
 
 
-# Authentication Dependencies
-async def _resolve_current_user(
-    raw_token: Annotated[str | None, Depends(get_raw_access_token)],
+# Core token validation checking L1 RAM first, then L2 Postgres
+async def authenticate_token(
+    raw_token: str,
+    db: DatabaseManager,
+    cache: TokenCache,
     allow_deactivated: bool = False,
 ) -> User:
-    """Validates the access token state and resolves the authenticated user context."""
-    if not raw_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token required.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+    """Validates raw token by checking L1 RAM first, then falling back to L2 Postgres."""
     token_hash = hash_token(raw_token)
 
-    # 1. Check local RAM cache first
-    cached_user = LOCAL_TOKEN_CACHE.get(token_hash)
-    if cached_user:
-        if not allow_deactivated and cached_user.deactivated:
+    # Fast path: check worker-local RAM cache first
+    cached_user = cache.get(token_hash)
+    if cached_user is not None:
+        if cached_user.deactivated and not allow_deactivated:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account is deactivated.",
@@ -86,61 +89,134 @@ async def _resolve_current_user(
             )
         return cached_user
 
-    # 2. Cache miss. Validate against PostgreSQL.
-    async with get_conn() as conn:
-        try:
-            token_record = await get_access_token(conn, token_hash)
-        except NotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or unrecognized token.",
-                headers={"WWW-Authenticate": "Bearer"},
-            ) from e
+    # Slow path: query PostgreSQL
+    try:
+        async with db.connection() as conn:
+            token_record = await db_queries.get_access_token(conn, token_hash)
 
-        if token_record.is_revoked or token_record.is_expired:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token expired or revoked.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            if token_record.is_revoked:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Access token has been revoked.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
-        try:
-            user = await get_user_by_id(conn, token_record.user_id)
-        except NotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account no longer exists.",
-                headers={"WWW-Authenticate": "Bearer"},
-            ) from e
+            if token_record.is_expired:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Access token has expired.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
-        if not allow_deactivated and user.deactivated:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account is deactivated.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            user = await db_queries.get_user_by_id(conn, token_record.user_id)
 
-        # 3. Save to local RAM cache
-        LOCAL_TOKEN_CACHE[token_hash] = user
-        return user
+            if user.deactivated and not allow_deactivated:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User account is deactivated.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or nonexistent access token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+
+    # Store in RAM cache for subsequent lookups
+    cache.set(token_hash, user)
+    return user
 
 
 async def get_current_user(
-    raw_token: Annotated[str | None, Depends(get_raw_access_token)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    db: Annotated[DatabaseManager, Depends(get_db)],
+    cache: Annotated[TokenCache, Depends(get_token_cache)],
 ) -> User:
-    """Resolves authenticated context and blocks deactivated accounts."""
-    return await _resolve_current_user(raw_token, allow_deactivated=False)
+    """Resolves active authenticated user from the HTTP Bearer header."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Bearer authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await authenticate_token(credentials.credentials, db, cache)
 
 
 async def get_current_user_allow_deactivated(
-    raw_token: Annotated[str | None, Depends(get_raw_access_token)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    db: Annotated[DatabaseManager, Depends(get_db)],
+    cache: Annotated[TokenCache, Depends(get_token_cache)],
 ) -> User:
-    """Resolves authenticated context allowing deactivated users through for reactivation."""
-    return await _resolve_current_user(raw_token, allow_deactivated=True)
+    """Resolves authenticated user allowing deactivated accounts (used for reactivation)."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Bearer authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await authenticate_token(credentials.credentials, db, cache, allow_deactivated=True)
 
 
-async def get_ws_current_user(
-    token: Annotated[str | None, Query(...)] = None,
+async def get_current_user_ws(
+    websocket: WebSocket,
+    token: Annotated[str | None, Query()] = None,
+    db: DatabaseManager = Depends(get_db_ws),
+    cache: TokenCache = Depends(get_token_cache_ws),
 ) -> User:
-    """Resolves authenticated user from URL query parameter (?token=...) for WebSockets."""
-    return await _resolve_current_user(token, allow_deactivated=False)
+    """Resolves authenticated user from WebSocket query parameter."""
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing WebSocket authentication token query parameter.",
+        )
+    try:
+        return await authenticate_token(token, db, cache)
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        raise
+
+
+# Service factory dependencies
+def get_auth_service(
+    db: Annotated[DatabaseManager, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    cache: Annotated[TokenCache, Depends(get_token_cache)],
+) -> AuthService:
+    """Instantiates AuthService with injected dependencies."""
+    return AuthService(db=db, redis=redis, cache=cache)
+
+
+def get_user_service(
+    db: Annotated[DatabaseManager, Depends(get_db)],
+) -> UserService:
+    """Instantiates UserService with injected DatabaseManager."""
+    return UserService(db=db)
+
+
+def get_messaging_service(
+    db: Annotated[DatabaseManager, Depends(get_db)],
+    ws_manager: Annotated[WebSocketManager, Depends(get_ws_manager)],
+) -> MessagingService:
+    """Instantiates MessagingService with injected dependencies."""
+    return MessagingService(db=db, ws_manager=ws_manager)
+
+
+def get_group_service(
+    db: Annotated[DatabaseManager, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    ws_manager: Annotated[WebSocketManager, Depends(get_ws_manager)],
+) -> GroupService:
+    """Instantiates GroupService with injected dependencies."""
+    return GroupService(db=db, redis=redis, ws_manager=ws_manager)
+
+
+# Route dependency type aliases
+CurrentUser = Annotated[User, Depends(get_current_user)]
+AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+MessagingServiceDep = Annotated[MessagingService, Depends(get_messaging_service)]
+GroupServiceDep = Annotated[GroupService, Depends(get_group_service)]
+WebSocketManagerDep = Annotated[WebSocketManager, Depends(get_ws_manager)]
