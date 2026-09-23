@@ -360,7 +360,7 @@ messenger-backend/
 
 ```bash
 # Run linting and formatting
-just lint
+just check
 
 # Run automated tests
 just test
