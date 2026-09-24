@@ -353,7 +353,7 @@ messenger-backend/
 
 4. **Start the backend server and infrastructure:**
    ```bash
-   docker compose up -d postgres redis
+   docker compose up -d
    ```
 
 ### Running Tests & Quality Checks
